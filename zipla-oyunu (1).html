@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>Zıpla Kaç!</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; overflow: hidden;
+    background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+    font-family: 'Segoe UI', Arial, sans-serif;
+    height: 100%;
+  }
+  #wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; }
+  canvas {
+    background: linear-gradient(180deg, #7dd3fc 0%, #38bdf8 40%, #0ea5e9 75%, #0369a1 100%);
+    border: 4px solid #facc15;
+    border-radius: 12px;
+    box-shadow: 0 0 30px rgba(250,204,21,0.4);
+    touch-action: none;
+  }
+  #ui {
+    position: absolute;
+    top: 30px;
+    color: white;
+    font-size: 28px;
+    font-weight: bold;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.6);
+    transition: transform 0.1s ease-out;
+  }
+  #msg {
+    position: absolute;
+    color: white;
+    text-align: center;
+    text-shadow: 2px 2px 6px rgba(0,0,0,0.8);
+    pointer-events: none;
+  }
+  #msg h1 { font-size: 36px; margin: 0; }
+  #msg p { font-size: 18px; margin: 6px 0 0 0; opacity: 0.9; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="ui">Skor: 0</div>
+  <div id="msg">
+    <h1>🟡 Zıpla Kaç!</h1>
+    <p>Boşluk tuşuna / fareye tıkla / dokun</p>
+  </div>
+  <canvas id="game" width="400" height="600"></canvas>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const uiScore = document.getElementById('ui');
+const msg = document.getElementById('msg');
+
+let bird, pipes, score, best, gravity, jump, gameOver, started, speed, frame;
+let clouds, groundX, particles, scorePop;
+const groundH = 40;
+
+let audioCtx;
+function beep(freq, dur, type = 'sine', vol = 0.15) {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.value = vol;
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start();
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    o.stop(audioCtx.currentTime + dur);
+  } catch (e) {}
+}
+function sndJump() { beep(520, 0.12, 'sine', 0.12); }
+function sndScore() { beep(880, 0.1, 'square', 0.1); setTimeout(() => beep(1100, 0.1, 'square', 0.08), 60); }
+function sndHit() { beep(120, 0.35, 'sawtooth', 0.18); }
+
+function resetGame() {
+  bird = { x: 80, y: 280, r: 16, vy: 0, wing: 0 };
+  pipes = [];
+  score = 0;
+  gravity = 0.28;
+  jump = -7;
+  speed = 2.2;
+  frame = 0;
+  gameOver = false;
+  started = false;
+  particles = [];
+  scorePop = 0;
+}
+
+best = parseInt(localStorage.getItem('zipla_best') || '0');
+clouds = [];
+for (let i = 0; i < 5; i++) {
+  clouds.push({
+    x: Math.random() * 400,
+    y: 40 + Math.random() * 180,
+    s: 0.6 + Math.random() * 0.8,
+    speed: 0.3 + Math.random() * 0.4
+  });
+}
+groundX = 0;
+resetGame();
+
+function spawnPipe() {
+  const gap = 220;
+  const minY = 60;
+  const maxY = canvas.height - gap - 60;
+  const topH = Math.random() * (maxY - minY) + minY;
+  pipes.push({ x: canvas.width + 20, top: topH, gap: gap, passed: false });
+}
+
+function flap() {
+  if (gameOver) { resetGame(); msg.style.display = 'none'; return; }
+  if (!started) { started = true; msg.style.display = 'none'; }
+  bird.vy = jump;
+  sndJump();
+}
+
+document.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); flap(); } });
+canvas.addEventListener('mousedown', flap);
+canvas.addEventListener('touchstart', e => { e.preventDefault(); flap(); });
+
+function update() {
+  clouds.forEach(c => {
+    c.x -= c.speed;
+    if (c.x < -60) { c.x = canvas.width + 60; c.y = 40 + Math.random() * 180; }
+  });
+  if (!gameOver) groundX -= speed;
+  if (groundX <= -28) groundX += 28;
+
+  if (!started || gameOver) return;
+  frame++;
+  bird.vy += gravity;
+  bird.y += bird.vy;
+
+  if (frame % 115 === 0) spawnPipe();
+
+  pipes.forEach(p => p.x -= speed);
+  pipes = pipes.filter(p => p.x > -60);
+
+  pipes.forEach(p => {
+    if (!p.passed && p.x + 30 < bird.x) {
+      p.passed = true;
+      score++;
+      scorePop = 1;
+      sndScore();
+      if (score % 7 === 0) speed += 0.25;
+    }
+    if (bird.x + bird.r > p.x && bird.x - bird.r < p.x + 50) {
+      if (bird.y - bird.r < p.top || bird.y + bird.r > p.top + p.gap) {
+        endGame();
+      }
+    }
+  });
+
+  if (scorePop > 0) scorePop -= 0.05;
+
+  particles.forEach(pt => {
+    pt.x += pt.vx; pt.y += pt.vy; pt.vy += 0.25; pt.life -= 0.02;
+  });
+  particles = particles.filter(pt => pt.life > 0);
+
+  if (bird.y + bird.r > canvas.height - groundH || bird.y - bird.r < 0) {
+    endGame();
+  }
+}
+
+function endGame() {
+  gameOver = true;
+  sndHit();
+  for (let i = 0; i < 18; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const spd = 2 + Math.random() * 4;
+    particles.push({
+      x: bird.x, y: bird.y,
+      vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
+      life: 1, color: Math.random() < 0.5 ? '#facc15' : '#fb923c'
+    });
+  }
+  if (score > best) { best = score; localStorage.setItem('zipla_best', best); }
+  msg.innerHTML = `<h1>💥 Bitti!</h1><p>Skor: ${score} | Rekor: ${best}</p><p>Tekrar başlamak için tıkla</p>`;
+  msg.style.display = 'block';
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // güneş
+  ctx.beginPath();
+  ctx.arc(340, 60, 32, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255, 247, 200, 0.9)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(340, 60, 24, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff9c4';
+  ctx.fill();
+
+  // bulutlar
+  clouds.forEach(c => {
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.scale(c.s, c.s);
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 22, 14, 0, 0, Math.PI * 2);
+    ctx.ellipse(18, -6, 16, 12, 0, 0, Math.PI * 2);
+    ctx.ellipse(-18, -4, 15, 11, 0, 0, Math.PI * 2);
+    ctx.ellipse(8, 6, 18, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  });
+
+  // uzak tepecikler (hafif parallax)
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  for (let i = -1; i < 3; i++) {
+    const bx = (i * 160) + (groundX % 160);
+    ctx.beginPath();
+    ctx.ellipse(bx + 80, canvas.height - groundH, 100, 40, 0, Math.PI, 0);
+    ctx.fill();
+  }
+
+  // borular
+  pipes.forEach(p => {
+    const grad = ctx.createLinearGradient(p.x, 0, p.x + 50, 0);
+    grad.addColorStop(0, '#16a34a');
+    grad.addColorStop(0.5, '#4ade80');
+    grad.addColorStop(1, '#16a34a');
+    ctx.fillStyle = grad;
+    ctx.fillRect(p.x, 0, 50, p.top);
+    ctx.fillRect(p.x, p.top + p.gap, 50, canvas.height - p.top - p.gap);
+    ctx.strokeStyle = '#15803d';
+    ctx.lineWidth = 2.5;
+    ctx.strokeRect(p.x, 0, 50, p.top);
+    ctx.strokeRect(p.x, p.top + p.gap, 50, canvas.height - p.top - p.gap);
+    // kapaklar
+    ctx.fillStyle = '#22c55e';
+    ctx.fillRect(p.x - 4, p.top - 22, 58, 22);
+    ctx.fillRect(p.x - 4, p.top + p.gap, 58, 22);
+    ctx.strokeRect(p.x - 4, p.top - 22, 58, 22);
+    ctx.strokeRect(p.x - 4, p.top + p.gap, 58, 22);
+  });
+
+  // kuş gövdesi
+  ctx.save();
+  ctx.translate(bird.x, bird.y);
+  ctx.rotate(Math.min(Math.max(bird.vy / 15, -0.5), 0.7));
+
+  // gölge
+  ctx.beginPath();
+  ctx.ellipse(2, bird.r + 4, bird.r * 0.8, 4, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.15)';
+  ctx.fill();
+
+  // kanat (çırpma animasyonu)
+  bird.wing += 0.3;
+  const wingOffset = Math.sin(bird.wing) * 6;
+  ctx.beginPath();
+  ctx.ellipse(-4, 2 + wingOffset, 10, 6, -0.3, 0, Math.PI * 2);
+  ctx.fillStyle = '#fbbf24';
+  ctx.fill();
+  ctx.strokeStyle = '#d97706';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // gövde (degrade)
+  const grad = ctx.createRadialGradient(-5, -5, 2, 0, 0, bird.r + 4);
+  grad.addColorStop(0, '#fff9c4');
+  grad.addColorStop(1, '#fbbf24');
+  ctx.beginPath();
+  ctx.arc(0, 0, bird.r, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = '#d97706';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // yanak
+  ctx.beginPath();
+  ctx.arc(2, 5, 3.5, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(248,113,113,0.5)';
+  ctx.fill();
+
+  // göz
+  ctx.beginPath();
+  ctx.arc(6, -5, 4, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(7.5, -5, 2.2, 0, Math.PI * 2);
+  ctx.fillStyle = '#1f2937';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(8.2, -5.8, 0.8, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+
+  // gaga
+  ctx.beginPath();
+  ctx.moveTo(13, -1);
+  ctx.lineTo(22, 1);
+  ctx.lineTo(13, 4);
+  ctx.closePath();
+  ctx.fillStyle = '#fb923c';
+  ctx.fill();
+  ctx.strokeStyle = '#c2410c';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // tepe tüyü
+  ctx.beginPath();
+  ctx.moveTo(-2, -bird.r);
+  ctx.quadraticCurveTo(2, -bird.r - 8, 6, -bird.r - 2);
+  ctx.strokeStyle = '#f97316';
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  ctx.restore();
+
+  // zemin
+  ctx.fillStyle = '#92400e';
+  ctx.fillRect(0, canvas.height - groundH, canvas.width, groundH);
+  ctx.fillStyle = '#65a30d';
+  ctx.fillRect(0, canvas.height - groundH, canvas.width, 10);
+  ctx.fillStyle = '#4d7c0f';
+  for (let x = groundX; x < canvas.width; x += 28) {
+    ctx.beginPath();
+    ctx.moveTo(x, canvas.height - groundH + 10);
+    ctx.lineTo(x + 14, canvas.height - groundH);
+    ctx.lineTo(x + 28, canvas.height - groundH + 10);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // parçacıklar
+  particles.forEach(pt => {
+    ctx.globalAlpha = Math.max(pt.life, 0);
+    ctx.fillStyle = pt.color;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  });
+
+  const scale = 1 + Math.max(scorePop, 0) * 0.5;
+  uiScore.style.transform = `scale(${scale})`;
+  uiScore.textContent = `Skor: ${score}  |  Rekor: ${best}`;
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
